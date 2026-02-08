@@ -3,12 +3,12 @@
 Interactive SSH client with two UI modes: local CLI or browser UI.
 
 This extends the original simple CLI client you provided to:
-- Offer a browser UI that uses a file upload button for the private key
-  (instead of a textarea). The uploaded file is read client-side and
-  sent to the local WebSocket server for use in authentication.
-- Keep totp and private key support. Private key may be provided as a path
-  (on the CLI) or uploaded in the browser UI. No passphrase-protected private
-  keys are supported (per your request).
+- Offer a browser UI that uses a file upload button for the private key.
+  The uploaded file is read client-side and sent to the local WebSocket
+  server for use in authentication.
+- Keep private key and username/password support. Private key may be
+  provided as a path (on the CLI) or uploaded in the browser UI. No
+  passphrase-protected private keys are supported (per your request).
 - When connected in either mode the client announces the connection and keeps
   the session active until the remote side or user closes it.
 
@@ -198,36 +198,74 @@ BROWSER_HTML = f"""<!doctype html>
   <meta charset="utf-8" />
   <title>Local SSH Browser Client</title>
   <style>
-    body {{ font-family: monospace; margin: 12px; }}
-    #terminal {{ width: 100%; height: 60vh; background: #000; color: #0f0; padding: 8px; overflow:auto; white-space: pre-wrap; }}
-    #inputline {{ width: 100%; box-sizing: border-box; font-family: monospace; }}
-    #connect-form {{ margin-bottom: 8px; }}
-    label {{ display:inline-block; width:90px; }}
+    body {{
+      font-family: monospace;
+      margin: 12px;
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+      background: #111;
+      color: #ddd;
+    }}
+    #connect-form {{ margin-bottom: 12px; }}
+    label {{ display:inline-block; width:110px; }}
+    input, button {{
+      font-family: monospace;
+      padding: 4px 6px;
+    }}
+    #terminal-wrapper {{
+      margin-top: auto;
+      border: 1px solid #0a0;
+      background: #000;
+      color: #0f0;
+      display: flex;
+      flex-direction: column;
+      height: 50vh;
+    }}
+    #terminal-output {{
+      flex: 1;
+      padding: 8px;
+      overflow: auto;
+      white-space: pre-wrap;
+    }}
+    #inputline {{
+      width: 100%;
+      box-sizing: border-box;
+      border: none;
+      border-top: 1px solid #0a0;
+      background: #000;
+      color: #0f0;
+      padding: 6px;
+      outline: none;
+      caret-color: #0f0;
+    }}
+    #status {{ margin-bottom: 8px; color: #9f9; }}
   </style>
 </head>
 <body>
   <h3>Local SSH Browser Client (fixed address)</h3>
   <div id="status">Disconnected</div>
   <form id="connect-form">
-    <div><label>Host:</label><input id="host" value="127.0.0.1" required disabled /></div>
+    <div><label>Host:</label><input id="host" value="127.0.0.1" required /></div>
     <div><label>Port:</label><input id="port" value="22" required /></div>
     <div><label>User:</label><input id="user" required /></div>
     <div><label>Password:</label><input id="password" type="password" /></div>
     <div><label>Private Key:</label><input id="privatekeyfile" type="file" accept=".key,.pem" /></div>
-    <div><label>TOTP:</label><input id="totp" /></div>
     <div style="margin-top:6px;">
       <button id="btn-connect" type="button">Connect</button>
       <button id="btn-disconnect" type="button" disabled>Disconnect</button>
     </div>
   </form>
 
-  <div id="terminal" tabindex="0"></div>
-  <input id="inputline" placeholder="Type here and press Enter to send. Ctrl+C supported." />
+  <div id="terminal-wrapper">
+    <div id="terminal-output" tabindex="0"></div>
+    <input id="inputline" placeholder="Type here (Enter sends, Ctrl+C sends SIGINT)." />
+  </div>
 
 <script>
 (function() {{
   var ws = null;
-  var terminal = document.getElementById('terminal');
+  var terminal = document.getElementById('terminal-output');
   var inputline = document.getElementById('inputline');
   var status = document.getElementById('status');
   var privateKeyText = ""; // holds uploaded private key contents
@@ -270,8 +308,7 @@ BROWSER_HTML = f"""<!doctype html>
         port: parseInt(document.getElementById('port').value, 10) || 22,
         username: document.getElementById('user').value,
         password: document.getElementById('password').value || "",
-        privatekey: privateKeyText || "",
-        totp: document.getElementById('totp').value || ""
+        privatekey: privateKeyText || ""
       }};
       ws.send(JSON.stringify(payload));
       document.getElementById('btn-disconnect').disabled = false;
@@ -290,6 +327,9 @@ BROWSER_HTML = f"""<!doctype html>
           append(msg.data);
         }} else if (msg.type === "status") {{
           status.textContent = msg.data;
+          if (msg.data === "Connected") {{
+            append("\\n[connected]\\n");
+          }}
         }}
       }} catch (e) {{
         append("\\n[parse error]\\n");
@@ -309,21 +349,70 @@ BROWSER_HTML = f"""<!doctype html>
     if (ws) ws.close();
   }});
 
+  function sendKeySequence(seq) {{
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({{ action: "stdin", data: seq }}));
+  }}
+
   inputline.addEventListener('keydown', function(e) {{
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    if (e.key === 'Enter') {{
-      var v = inputline.value + "\\n";
-      ws.send(JSON.stringify({{ action: "stdin", data: v }}));
-      inputline.value = "";
+    if (e.ctrlKey && e.key === 'c') {{
+      sendKeySequence(String.fromCharCode(3));
       e.preventDefault();
       return;
     }}
-    // simple Ctrl+C support
-    if (e.ctrlKey && e.key === 'c') {{
-      ws.send(JSON.stringify({{ action: "stdin", data: String.fromCharCode(3) }}));
+    if (e.ctrlKey && e.key === 'd') {{
+      sendKeySequence(String.fromCharCode(4));
       e.preventDefault();
+      return;
+    }}
+    if (e.key === 'Enter') {{
+      sendKeySequence("\\n");
+      e.preventDefault();
+      return;
+    }}
+    if (e.key === 'Backspace') {{
+      sendKeySequence(String.fromCharCode(127));
+      e.preventDefault();
+      return;
+    }}
+    if (e.key === 'Tab') {{
+      sendKeySequence("\\t");
+      e.preventDefault();
+      return;
+    }}
+    if (e.key === 'ArrowUp') {{
+      sendKeySequence("\\u001b[A");
+      e.preventDefault();
+      return;
+    }}
+    if (e.key === 'ArrowDown') {{
+      sendKeySequence("\\u001b[B");
+      e.preventDefault();
+      return;
+    }}
+    if (e.key === 'ArrowRight') {{
+      sendKeySequence("\\u001b[C");
+      e.preventDefault();
+      return;
+    }}
+    if (e.key === 'ArrowLeft') {{
+      sendKeySequence("\\u001b[D");
+      e.preventDefault();
+      return;
+    }}
+    if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {{
+      sendKeySequence(e.key);
+      e.preventDefault();
+      return;
     }}
   }});
+
+  document.getElementById('terminal-wrapper').addEventListener('click', function() {{
+    inputline.focus();
+  }});
+
+  inputline.focus();
 }})();
 </script>
 </body>
@@ -387,9 +476,6 @@ class BrowserSSHServer:
                         username = obj.get("username")
                         password = obj.get("password") or None
                         privatekey_text = obj.get("privatekey") or None
-                        totp = obj.get("totp") or None
-                        # totp is preserved but not used by this script by default;
-                        # you could pass it as part of password or to server if server expects it.
                         # Attempt connection
                         self.write_message(json.dumps({"type":"status","data":"Connecting..."}))
                         client = open_ssh_client(host, port, username, password=password, key_text=privatekey_text)
